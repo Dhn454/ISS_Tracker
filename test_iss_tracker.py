@@ -8,6 +8,10 @@ Tests:
 - test_compute_average_speed(): Verifies the average speed calculation.
 - test_find_closest_epoch(): Ensures the function finds the closest ISS state vector.
 - test_convert_epoch_to_datetime(): Tests conversion of epoch timestamps.
+- test_calculate_speed_zero_velocity(): Ensures correct behavior when velocity is zero.
+- test_compute_average_speed_empty_list(): Checks handling of empty velocity list.
+- test_find_closest_epoch_empty_list(): Ensures function handles an empty state vector list.
+- test_convert_epoch_to_datetime_invalid_format(): Tests error handling for incorrect epoch format.
 
 Author: Dominic Nguyen
 Date: 02/24/2025
@@ -21,9 +25,15 @@ pytest -v test_iss_tracker.py
 import pytest
 from datetime import datetime, timezone
 
-# Import functions from `iss_module.py` (renamed from `iss_tracker.py`)
-from iss_tracker import calculate_speed, compute_average_speed, find_closest_epoch, convert_epoch_to_datetime
+# Import functions from `iss_tracker.py`
+from iss_tracker import (
+    calculate_speed,
+    compute_average_speed,
+    find_closest_epoch,
+    convert_epoch_to_datetime
+)
 
+# Mock ISS trajectory data
 mock_data = [
     {
         "epoch": "2025-055T12:00:00.000Z",
@@ -47,19 +57,40 @@ def test_compute_average_speed():
 
 def test_find_closest_epoch():
     """Tests finding the closest epoch to a given time."""
-    now = datetime.utcnow().replace(tzinfo=timezone.utc)  # Use current UTC time
+    now = datetime.now(timezone.utc)  # Corrected per deprecation warning
     closest = find_closest_epoch(mock_data)
-    
+
     # Determine expected closest epoch dynamically
     expected_closest = min(mock_data, key=lambda sv: abs(convert_epoch_to_datetime(sv["epoch"]) - now))
-    
+
     assert closest["epoch"] == expected_closest["epoch"], (
         f"Expected closest epoch to be {expected_closest['epoch']}, but got {closest['epoch']}"
     )
+
+def test_find_closest_epoch_empty_list():
+    """Ensures function handles an empty state vector list properly."""
+    with pytest.raises(ValueError):  # Expecting a ValueError due to min() on empty list
+        find_closest_epoch([])  # Passing an empty list
+
 
 def test_convert_epoch_to_datetime():
     """Tests if epoch conversion from YYYY-DDD format works properly."""
     test_epoch = "2025-055T12:00:00.000Z"
     expected = datetime(2025, 2, 24, 12, 0, 0, tzinfo=timezone.utc)  # 2025-055 is Feb 24, 2025
     assert convert_epoch_to_datetime(test_epoch) == expected
+
+# === Additional Tests for Edge Cases === #
+
+def test_calculate_speed_zero_velocity():
+    """Ensures correct behavior when velocity is zero (should return 0 speed)."""
+    assert calculate_speed((0, 0, 0)) == 0
+
+def test_compute_average_speed_empty_list():
+    """Checks handling of empty velocity list (should return 0)."""
+    assert compute_average_speed([]) == 0
+
+def test_convert_epoch_to_datetime_invalid_format():
+    """Tests error handling for incorrectly formatted epoch strings."""
+    with pytest.raises(ValueError):
+        convert_epoch_to_datetime("Invalid-Epoch-Format")
 
