@@ -28,7 +28,7 @@ This API ingests the **XML format** for easier data parsing.
 ## **🐳 Deploying with Docker Compose**
 ### **1️⃣ Clone the Repository and Navigate to the Project Directory**
 ```bash
-git clone <repo_url>
+git clone https://github.com/Dhn454/ISS_Tracker.git
 cd ISS_Tracker
 ```
 ### **2️⃣ Build and Start the Containers**
