@@ -31,6 +31,8 @@ from datetime import datetime, timezone
 from flask import Flask, jsonify, request
 from geopy.geocoders import Nominatim
 import json
+from geopy.exc import GeocoderTimedOut
+
 
 # Initialize Flask app
 app = Flask(__name__)
@@ -99,33 +101,45 @@ def convert_cartesian_to_geo(x: float, y: float, z: float) -> dict:
         z (float): Z coordinate in km.
 
     Returns:
-        dict: Dictionary with latitude, longitude, altitude, and geoposition.
+        dict: Dictionary with latitude, longitude, altitude, and geoposition in English.
     """
     try:
-        # Sample conversion logic (Replace with actual conversion logic)
         latitude = math.degrees(math.atan2(z, math.sqrt(x**2 + y**2)))
         longitude = math.degrees(math.atan2(y, x))
         altitude = math.sqrt(x**2 + y**2 + z**2) - 6371  # Approximate Earth radius subtraction
 
-        # Use Geopy to find location (this might be causing the error)
-        geolocator = Nominatim(user_agent="iss_tracker")
-        location = geolocator.reverse((latitude, longitude), exactly_one=True)
+        logging.debug(f"Computed Lat/Lon/Alt: {latitude}, {longitude}, {altitude}")
 
-        geoposition = location.address if location else "Unknown Location"
+        # Initialize GeoPy geolocator with English language setting
+        geolocator = Nominatim(user_agent="iss_tracker", timeout=20)
 
-        geo_data = {
+        # Force English output
+        location = geolocator.reverse((latitude, longitude), exactly_one=True, language="en")
+
+        if location and location.address:
+            geoposition = location.address
+        else:
+            logging.warning("GeoPy could not find a location. Assigning 'Open Ocean'.")
+            geoposition = "Open Ocean"
+
+        return {
             "latitude": latitude,
             "longitude": longitude,
             "altitude": altitude,
             "geoposition": geoposition
         }
 
-        logging.debug(f"Geo conversion output: {geo_data}")
-
-        return geo_data
+    except GeocoderTimedOut as e:
+        logging.error(f"GeoPy Timeout Error: {e}")
+        return {
+            "latitude": latitude,
+            "longitude": longitude,
+            "altitude": altitude,
+            "geoposition": "GeoPy Timeout"
+        }
 
     except Exception as e:
-        logging.error(f"Error in convert_cartesian_to_geo: {str(e)}")
+        logging.error(f"Error in convert_cartesian_to_geo: {e}")
         return {
             "latitude": None,
             "longitude": None,
@@ -243,7 +257,6 @@ def find_closest_epoch(state_vectors):
 
     return closest_state
 
-
 @app.route('/epochs', methods=['GET'])
 def get_epochs():
     """
@@ -257,10 +270,11 @@ def get_epochs():
         JSON: List of available epochs.
     """
     try:
-        redis_keys = redis_client.keys("epoch:*")  # Get all epoch keys
-        epochs = [key.replace("epoch:", "") for key in redis_keys]  # Remove "epoch:" prefix
+        redis_keys = redis_client.keys("epoch:*")  # Retrieve epoch keys from Redis
+        if not redis_keys:
+            return jsonify({"error": "No ISS data available"}), 404
 
-        # Sorting to ensure chronological order
+        epochs = [key.replace("epoch:", "") for key in redis_keys]
         epochs.sort()
 
         # Apply pagination
@@ -272,7 +286,6 @@ def get_epochs():
         else:
             epochs = epochs[offset:]
 
-        logging.debug(f"Returning epochs: {epochs}")
         return jsonify({"epochs": epochs})
 
     except Exception as e:
@@ -365,153 +378,35 @@ from geopy.exc import GeocoderTimedOut
 def get_epoch_location(epoch):
     """Returns latitude, longitude, altitude, and geoposition for a given epoch."""
     try:
-        decoded_epoch = epoch.replace("%20", " ")  # Handle URL encoding
+        decoded_epoch = f"epoch:{epoch}"  # Ensure proper Redis key format
+
+        # Check if epoch exists in Redis
         if not redis_client.exists(decoded_epoch):
-            return jsonify({"error": f"Epoch '{decoded_epoch}' not found in Redis"}), 404
+            return jsonify({"error": f"Epoch '{epoch}' not found in Redis"}), 404
 
         # Retrieve data from Redis
         data = redis_client.hgetall(decoded_epoch)
-        x, y, z = float(data[b'x']), float(data[b'y']), float(data[b'z'])
+        if not data:
+            return jsonify({"error": f"Epoch '{epoch}' has no data in Redis"}), 404
 
-        # Convert Cartesian to latitude, longitude, altitude
-        latitude, longitude, altitude = convert_cartesian_to_geo(x, y, z)
+        # Convert data values
+        x, y, z = float(data["x"]), float(data["y"]), float(data["z"])
 
-        # Get geoposition using GeoPy
-        geolocator = Nominatim(user_agent="iss_tracker")
-        try:
-            location = geolocator.reverse((latitude, longitude), language="en", timeout=10)
-            geoposition = location.address if location else "Unknown Location"
-        except Exception as e:
-            logging.error(f"GeoPy error: {e}")
-            geoposition = "GeoPy Failed"
+        # Convert to latitude, longitude, altitude
+        geo_data = convert_cartesian_to_geo(x, y, z)
 
         return jsonify({
-            "epoch": decoded_epoch,
-            "latitude": latitude,
-            "longitude": longitude,
-            "altitude": altitude,
-            "geoposition": geoposition
+            "epoch": epoch,
+            "latitude": geo_data["latitude"],
+            "longitude": geo_data["longitude"],
+            "altitude": geo_data["altitude"],
+            "geoposition": geo_data["geoposition"]
         })
 
     except Exception as e:
         logging.error(f"Error in /epochs/<epoch>/location: {e}")
         return jsonify({"error": "Internal Server Error", "details": str(e)}), 500
 
-'''
-@app.route('/now', methods=['GET'])
-def get_now_location():
-    """
-    Returns the ISS state vector closest to the current time, including:
-    - Epoch timestamp
-    - Latitude, Longitude, Altitude
-    - Geoposition (city, country)
-    - Instantaneous speed
-    """
-    try:
-        # Retrieve state vectors from Redis
-        state_vectors = []
-        for key in redis_client.keys("epoch:*"):
-            data = redis_client.hgetall(key)
-            logging.info(f"Retrieved data from Redis: {data}")
-            # Decode the key and values properly
-            key = key.decode("utf-8") if isinstance(key, bytes) else key
-            data = {k.decode("utf-8"): v.decode("utf-8") for k, v in data.items()}
-
-            # Convert numeric values from strings to floats
-            state_vectors.append({
-                "epoch": key,
-                "position": (float(data["x"]), float(data["y"]), float(data["z"])),
-                "velocity": (float(data["x_dot"]), float(data["y_dot"]), float(data["z_dot"]))
-            })
-
-        if not state_vectors:
-            return jsonify({"error": "No ISS data available"}), 500
-
-        # Find the closest epoch using state_vectors
-        closest_vector = find_closest_epoch(state_vectors)
-
-        # Extract position
-        x, y, z = closest_vector["position"]
-
-        # Convert Cartesian to geolocation (lat, long, alt)
-        geo_data = convert_cartesian_to_geo(x, y, z)
-
-        # Compute instantaneous speed
-        speed = calculate_speed(closest_vector["velocity"])
-
-        return jsonify({
-            "epoch": closest_vector["epoch"],
-            "latitude": geo_data["latitude"],
-            "longitude": geo_data["longitude"],
-            "altitude": geo_data["altitude"],
-            "geoposition": geo_data["geoposition"],
-            "speed": speed
-        })
-
-    except Exception as e:
-        logging.error(f"Error in /now route: {str(e)}")
-        return jsonify({"error": "Internal Server Error", "details": str(e)}), 500
-'''
-'''
-@app.route('/now', methods=['GET'])
-def get_now_location():
-    """
-    Returns the ISS state vector closest to the current time, including:
-    - Epoch timestamp
-    - Latitude, Longitude, Altitude
-    - Geoposition (city, country)
-    - Instantaneous speed
-    """
-    try:
-        logging.debug("Fetching state vectors from Redis...")
-        state_vectors = []
-        redis_keys = redis_client.keys("epoch:*")
-        logging.debug(f"Redis keys found: {redis_keys}")
-
-        for key in redis_keys:
-            data = redis_client.hgetall(key)
-            logging.debug(f"Raw data from Redis: {data}")
-
-            # No need to decode, as decode_responses=True already returns strings
-            state_vectors.append({
-                "epoch": key,  # Redis key is already a string
-                "position": (float(data["x"]), float(data["y"]), float(data["z"])),
-                "velocity": (float(data["x_dot"]), float(data["y_dot"]), float(data["z_dot"]))
-            })
-
-        if not state_vectors:
-            logging.error("No ISS data available in Redis.")
-            return jsonify({"error": "No ISS data available"}), 500
-
-        # Find the closest epoch using state_vectors
-        closest_vector = find_closest_epoch(state_vectors)
-        logging.debug(f"Closest vector found: {closest_vector}")
-
-        # Extract position
-        x, y, z = closest_vector["position"]
-        logging.debug(f"Converting position: {x}, {y}, {z}")
-
-        # Convert Cartesian to geolocation (lat, long, alt)
-        geo_data = convert_cartesian_to_geo(x, y, z)
-        logging.debug(f"Geo Data: {geo_data}")
-
-        # Compute instantaneous speed
-        speed = calculate_speed(closest_vector["velocity"])
-        logging.debug(f"Calculated Speed: {speed}")
-
-        return jsonify({
-            "epoch": closest_vector["epoch"],
-            "latitude": geo_data["latitude"],
-            "longitude": geo_data["longitude"],
-            "altitude": geo_data["altitude"],
-            "geoposition": geo_data["geoposition"],
-            "speed": speed
-        })
-
-    except Exception as e:
-        logging.error(f"Error in /now route: {str(e)}")
-        return jsonify({"error": "Internal Server Error", "details": str(e)}), 500
-'''
 
 @app.route('/now', methods=['GET'])
 def get_now_location():
@@ -578,7 +473,11 @@ def get_now_location():
         logging.error(f"Error in /now route: {str(e)}")
         return jsonify({"error": "Internal Server Error", "details": str(e)}), 500
 
-
+"""
+if __name__ == "__main__":
+    load_data_to_redis()  # Ensure data is loaded when app starts
+    app.run(host='0.0.0.0', port=5000)
+"""
 if __name__ == "__main__":
     load_data_to_redis()  # Ensure data is loaded when app starts
     print(redis_client.keys("epoch:*"))

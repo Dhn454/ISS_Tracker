@@ -23,15 +23,19 @@ pytest -v test_iss_tracker.py
 """
 
 import pytest
+import json
 from datetime import datetime, timezone
 
 # Import functions from `iss_tracker.py`
+#from iss_tracker import app
+
 from iss_tracker import (
     calculate_speed,
     compute_average_speed,
     find_closest_epoch,
-    convert_epoch_to_datetime
-)
+    convert_epoch_to_datetime,
+    app
+    )
 
 # Mock ISS trajectory data
 mock_data = [
@@ -94,3 +98,65 @@ def test_convert_epoch_to_datetime_invalid_format():
     with pytest.raises(ValueError):
         convert_epoch_to_datetime("Invalid-Epoch-Format")
 
+"""
+@pytest.fixture
+def client():
+    
+    #Flask test client setup
+    
+    with app.test_client() as client:
+        yield client
+
+def test_get_epochs(client):
+    #Test /epochs endpoint returns data
+    response = client.get("/epochs")
+    assert response.status_code == 200
+    data = response.get_json()
+    assert isinstance(data["epochs"], list)  # Should be a list
+
+def test_get_epoch(client):
+    #Test /epochs/<epoch> returns correct structure
+    epoch = "2025-088T12:00:00.000Z"
+    response = client.get(f"/epochs/{epoch}")
+    assert response.status_code in [200, 404]
+    data = response.get_json()
+    if response.status_code == 200:
+        assert "position" in data
+        assert "velocity" in data
+
+def test_get_epoch_speed(client):
+    #Test /epochs/<epoch>/speed
+    epoch = "2025-088T12:00:00.000Z"
+    response = client.get(f"/epochs/{epoch}/speed")
+    assert response.status_code in [200, 404]
+    data = response.get_json()
+    if response.status_code == 200:
+        assert isinstance(data["speed"], float)
+
+def test_get_epoch_location(client):
+    #Test /epochs/<epoch>/location
+    epoch = "2025-088T12:00:00.000Z"
+    response = client.get(f"/epochs/{epoch}/location")
+    assert response.status_code in [200, 404]
+    data = response.get_json()
+    if response.status_code == 200:
+        assert "latitude" in data
+        assert "longitude" in data
+        assert "altitude" in data
+        assert "geoposition" in data
+
+def test_get_now(client):
+    #Test /now endpoint returns real-time data
+    response = client.get("/now")
+    assert response.status_code == 200
+    data = response.get_json()
+    assert "speed" in data
+    assert "latitude" in data
+    assert "longitude" in data
+
+def test_redis_key_exists(client):
+    #Test if specific Redis key exists
+    redis_key = "epoch:2025-074T06:07:48.000Z"
+    response = client.get(f"/epochs/2025-074T06:07:48.000Z")
+    assert response.status_code in [200, 404]
+"""
